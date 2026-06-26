@@ -34,8 +34,10 @@
 
         /* منطقة المحتوى الفعلي للأقسام */
         .content-area { flex: 1; padding: 30px; box-sizing: border-box; min-width: 300px; }
-        .app-section { display: none; animation: fadeIn 0.3s ease-in-out forwards; }
-        .app-section.active { display: block; }
+        
+        /* التحكم بالظهور والإخفاء بالأقسام مبرمج هنا للـ CSS */
+        .app-section { display: none; }
+        .app-section.active { display: block; animation: fadeIn 0.3s ease-in-out forwards; }
 
         .panel { background: var(--bg-card); padding: 25px; border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 8px 20px rgba(0,0,0,0.3); }
         .panel h2 { margin-top: 0; color: #fff; font-size: 1.5rem; display: flex; align-items: center; gap: 10px; }
@@ -61,7 +63,7 @@
 
     <header>
         <h1><span>DevAI</span> Suite</h1>
-        <div class="author">المهندس ومؤسس المنصة المتقدمة: [LOTAIRI ]</div>
+        <div class="author">المهندس ومؤسس المنصة المتقدمة: [اسمك هنا]</div>
     </header>
 
     <div class="main-layout">
@@ -82,7 +84,7 @@
             <div id="networks" class="app-section active">
                 <div class="panel">
                     <h2>🌐 هندسة وتطوير الشبكات بالذكاء</h2>
-                    <p>اكتب مواصفات البنية التحتية أو السيرفر المطلوب (مثال: إعداد حاوية Docker لتطبيق Node.js مع قاعدة بيانات) لتوليد ملفات الإعدادات والشبكات الفورية:</p>
+                    <p>اكتب مواصفات البنية التحتية أو السيرفر المطلوب لتوليد ملفات الإعدادات والشبكات الفورية:</p>
                     <textarea id="prompt-networks" placeholder="مثال: اكتب ملف Dockerfile مخصص ومؤمن لرفع مشروع ويب..."></textarea>
                     <div class="action-row">
                         <span style="color: var(--text-dim); font-size: 0.85rem;">المحرك الحي: Gemini LLM Network Agent</span>
@@ -96,7 +98,7 @@
             <div id="cybersec" class="app-section">
                 <div class="panel">
                     <h2>🛡️ الأمن السيبراني وفحص الثغرات</h2>
-                    <p>ضع الكود البرمجي الخاص بك هنا ليقوم الذكاء الاصطناعي بفحصه أمنياً، واستخراج الثغرات (Vulnerabilities)، وتقديم النسخة المؤمنة المحمية من الهجمات:</p>
+                    <p>ضع الكود البرمجي الخاص بك هنا ليقوم الذكاء الاصطناعي بفحصه أمنياً، واستخراج الثغرات وتقديم النسخة المؤمنة:</p>
                     <textarea id="prompt-cybersec" placeholder="ضع كود قاعدة البيانات أو كود برمجى هنا للتأكد من خلوه من ثغرات الحقن..."></textarea>
                     <div class="action-row">
                         <span style="color: var(--text-dim); font-size: 0.85rem;">المحرك الحي: CyberSec AI Auditor</span>
@@ -110,7 +112,7 @@
             <div id="architecture" class="app-section">
                 <div class="panel">
                     <h2>📐 التصميم والهندسة البرمجية بالذكاء</h2>
-                    <p>اطرح فكرة مشروعك بالكامل ليقوم النظام بوضع الهيكلية الهندسية المثالية (Architecture)، وتحديد الجداول وقواعد البيانات الأنسب لحالتك:</p>
+                    <p>اطرح فكرة مشروعك بالكامل ليقوم النظام بوضع الهيكلية الهندسية المثالية وتحديد الجداول وقواعد البيانات الأنسب:</p>
                     <textarea id="prompt-architecture" placeholder="مثال: أريد هندسة نظام لتطبيق توصيل طلبات، ما هي الهيكلية الأفضل وقواعد البيانات؟"></textarea>
                     <div class="action-row">
                         <span style="color: var(--text-dim); font-size: 0.85rem;">المحرك الحي: Software Architect Deep Advisor</span>
@@ -124,7 +126,7 @@
             <div id="optimizer" class="app-section">
                 <div class="panel">
                     <h2>⚡ حل المشاكل وتحسين كفاءة الكود</h2>
-                    <p>أدخل كوداً برمجياً يعمل ببطء أو يستهلك طاقة معالجة عالية، ليقوم الذكاء الاصطناعي برفع كفاءته وتحسين الـ Time Complexity ليعمل بأعلى سرعة مثالية:</p>
+                    <p>أدخل كوداً برمجياً يعمل ببطء، ليقوم الذكاء الاصطناعي برفع كفاءته وتحسين الـ Time Complexity ليعمل بأعلى سرعة مثالية:</p>
                     <textarea id="prompt-optimizer" placeholder="ضع دوال برمجية معقدة أو حلقات تكرارية مكثفة هنا لتحسينها..."></textarea>
                     <div class="action-row">
                         <span style="color: var(--text-dim); font-size: 0.85rem;">المحرك الحي: Code Optimizer Engine</span>
@@ -136,3 +138,5 @@
 
             <!-- 5. قسم بوابات الدفع -->
             <div id="payments" class="app-section">
+                <div class="panel">
+                    <h2>💳 بناء واجهات وبوابات الدفع بالذكاء</h2>
