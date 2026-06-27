@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DevAI Core OS - البيئة الهندسية السحابية الشاملة</title>
+    <title>DevAI Core OS - بيئة الهندسة والتدريب المستمر</title>
     <style>
         :root {
             --bg-main: #040711;
@@ -21,13 +21,23 @@
         header { background: linear-gradient(135deg, var(--bg-sidebar), var(--bg-main)); padding: 25px 30px; text-align: center; border-bottom: 1px solid var(--border); box-shadow: 0 4px 25px rgba(0,0,0,0.5); }
         header h1 { margin: 0; font-size: 2.2rem; color: #fff; text-shadow: 0 0 15px var(--accent-glow); }
         header h1 span { color: var(--accent); }
-        header .author { color: #f59e0b; font-size: 1.1rem; margin-top: 6px; font-weight: bold; cursor: pointer; text-decoration: underline; }
+        header .author { color: #f59e0b; font-size: 1.1rem; margin-top: 6px; font-weight: bold; }
+        
         .main-layout { display: flex; flex: 1; flex-wrap: wrap; }
-        .sidebar { width: 310px; background: var(--bg-sidebar); border-left: 1px solid var(--border); padding: 20px 10px; box-sizing: border-box; }
+        
+        .sidebar { width: 310px; background: var(--bg-sidebar); border-left: 1px solid var(--border); padding: 20px 10px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; }
+        .sidebar-menu { flex: 1; }
         .sidebar-title { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1.5px; padding: 10px 15px; font-weight: bold; border-bottom: 1px solid #1e293b; margin-bottom: 12px; }
         .nav-btn { width: 100%; text-align: right; background: none; border: none; color: var(--text-dim); padding: 12px 15px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 12px; transition: all 0.2s ease; }
         .nav-btn:hover { background: rgba(255,255,255,0.02); color: #fff; }
         .nav-btn.active { background: linear-gradient(90deg, rgba(0,242,254,0.12), transparent); color: var(--accent); border-right: 4px solid var(--accent); font-weight: bold; }
+        
+        /* لوحة التحكم المرئية لإعدادات السيرفر والمفاتيح */
+        .keys-panel { background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-top: 20px; }
+        .keys-panel h4 { margin: 0 0 10px 0; font-size: 0.85rem; color: #fff; text-shadow: 0 0 5px var(--accent-glow); }
+        .key-input { width: 100%; background: #040711; border: 1px solid var(--border); border-radius: 4px; color: #fff; padding: 8px; font-size: 0.8rem; box-sizing: border-box; margin-bottom: 8px; font-family: monospace; }
+        .save-keys-btn { width: 100%; background: var(--success); color: #fff; border: none; padding: 8px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 0.85rem; }
+        
         .content-area { flex: 1; padding: 30px; box-sizing: border-box; min-width: 320px; }
         .app-section { display: none; }
         .app-section.active { display: block; animation: slideUp 0.3s ease-in-out forwards; }
@@ -41,6 +51,7 @@
         .action-row { display: flex; justify-content: space-between; align-items: center; margin-top: 15px; flex-wrap: wrap; gap: 15px; }
         .action-btn { background: linear-gradient(135deg, var(--accent), #00b8ff); color: var(--bg-main); border: none; padding: 12px 30px; border-radius: 8px; cursor: pointer; font-size: 0.95rem; font-weight: bold; transition: all 0.2s; box-shadow: 0 4px 12px var(--accent-glow); }
         .action-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 18px var(--accent-glow); }
+        
         .status-rack { display: flex; gap: 15px; margin-top: 15px; font-size: 0.85rem; color: var(--text-dim); flex-wrap: wrap; }
         .rack-item { display: flex; align-items: center; gap: 6px; background: rgba(0,0,0,0.2); padding: 5px 12px; border-radius: 4px; border: 1px solid var(--border); }
         .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #45475a; }
@@ -56,31 +67,42 @@
 
     <header>
         <h1><span>DevAI</span> Core OS</h1>
-        <!-- عند الضغط على هذا السطر ستفتح لك نافذة إدخال المفاتيح بخصوصية تامة كما طلبت -->
-        <div class="author" onclick="setupDeveloperKeys()">المطور ومؤسس النظام السحابي الفعلي (اضغط هنا لضبط المفاتيح السحابية ⚙️)</div>
+        <div class="author">المطور ومؤسس النظام السحابي الفعلي: [اكتب اسمك هنا]</div>
     </header>
 
     <div class="main-layout">
         <div class="sidebar">
-            <div class="sidebar-title">البيئات السحابية المشتركة</div>
-            <button class="nav-btn active" onclick="switchSection('ide-space', this)">💻 بيئة التطوير المتعددة اللغات</button>
-            <button class="nav-btn" onclick="switchSection('colab-lab', this)">🧪 مختبر نماذج Google Colab</button>
+            <div class="sidebar-menu">
+                <div class="sidebar-title">البيئات السحابية المشتركة</div>
+                <button class="nav-btn active" onclick="switchSection('ide-space', this)">💻 بيئة التطوير المتعددة اللغات</button>
+                <button class="nav-btn" onclick="switchSection('colab-lab', this)">🧪 مختبر نماذج Google Colab</button>
 
-            <div class="sidebar-title">البنية التحتية وهندسة الأنظمة</div>
-            <button class="nav-btn" onclick="switchSection('infra-code', this)">🏗️ البنية التحتية ككود (IaC)</button>
-            <button class="nav-btn" onclick="switchSection('os-dev', this)">💾 تطوير وهندسة أنظمة التشغيل</button>
-            
-            <div class="sidebar-title">الأمن والأعمال الذكية</div>
-            <button class="nav-btn" onclick="switchSection('tuning', this)">⚙️ مركز ضبط وتطويع الـ AI</button>
-            <button class="nav-btn" onclick="switchSection('cybersec', this)">🛡️ الأمن السيبراني وفحص الكود</button>
-            <button class="nav-btn" onclick="switchSection('payments', this)">💳 بوابات وواجهات الدفع الحية</button>
+                <div class="sidebar-title">البنية التحتية وهندسة الأنظمة</div>
+                <button class="nav-btn" onclick="switchSection('infra-code', this)">🏗️ البنية التحتية ككود (IaC)</button>
+                <button class="nav-btn" onclick="switchSection('os-dev', this)">💾 تطوير وهندسة أنظمة التشغيل</button>
+                
+                <div class="sidebar-title">الأمن والأعمال الذكية</div>
+                <button class="nav-btn" onclick="switchSection('tuning', this)">⚙️ مركز ضبط وتطويع الـ AI</button>
+                <button class="nav-btn" onclick="switchSection('cybersec', this)">🛡️ الأمن السيبراني وفحص الكود</button>
+                <button class="nav-btn" onclick="switchSection('payments', this)">💳 بوابات وواجهات الدفع الحية</button>
+            </div>
+
+            <!-- لوحة التحكم المرئية الحقيقية والثابتة -->
+            <div class="keys-panel">
+                <h4>⚙️ إعدادات النظم السحابية الهجينة</h4>
+                <input type="text" id="cfg-colab" class="key-input" placeholder="رابط نفق كولاب (Ngrok URL)">
+                <input type="text" id="cfg-gemini" class="key-input" placeholder="مفتاح Google Gemini API">
+                <input type="text" id="cfg-groq" class="key-input" placeholder="مفتاح Groq API (Llama 3)">
+                <input type="text" id="cfg-hf" class="key-input" placeholder="توكن Hugging Face Token">
+                <button onclick="saveKeysToStorage()" class="save-keys-btn">حفظ وتنشيط السيرفرات رباعياً ✓</button>
+            </div>
         </div>
 
         <div class="content-area">
             <div id="ide-space" class="app-section active">
                 <div class="panel">
-                    <h2>💻 بيئة التطوير البرمجية متعددة اللغات بالذكاء الحقيقي</h2>
-                    <p>اختر اللغة واكتب طلبك ليقوم النظام بالاستدعاء المباشر عبر السيرفرات الحية:</p>
+                    <h2>💻 بيئة التطوير البرمجية متعددة اللغات بالتطوير المستمر</h2>
+                    <p>اكتب طلبك ليقوم النظام بالمعالجة الحية عبر كولاب، أو التوجيه التلقائي للمستويات الثلاثة الاحتياطية:</p>
                     <div class="selector-row">
                         <select id="ide-lang" class="select-input">
                             <option value="javascript">JavaScript / TypeScript</option>
@@ -90,32 +112,10 @@
                             <option value="rust">Rust</option>
                         </select>
                     </div>
-                    <textarea id="prompt-ide" placeholder="اكتب دالة برمجية أو ضع كوداً ليتم معالجته عبر النماذج الحية..."></textarea>
+                    <textarea id="prompt-ide" placeholder="اكتب دالة برمجية أو ضع كوداً ليتم معالجته عبر السيرفرات الحية..."></textarea>
                     <div class="action-row">
                         <div class="status-rack">
-                            <div class="rack-item"><span id="rack-colab" class="status-dot"></span> 1. Colab Server</div>
+                            <div class="rack-item"><span id="rack-colab" class="status-dot"></span> 1. Colab Engine</div>
                             <div class="rack-item"><span id="rack-gemini" class="status-dot"></span> 2. Google Gemini</div>
                             <div class="rack-item"><span id="rack-groq" class="status-dot"></span> 3. Groq (Llama 3)</div>
                             <div class="rack-item"><span id="rack-hf" class="status-dot"></span> 4. Hugging Face</div>
-                        </div>
-                        <button onclick="executeAI('ide')" class="action-btn">تحليل وتوليد الكود 🚀</button>
-                    </div>
-                    <div id="box-ide" class="response-container"><div class="output-header"><span>مخرجات السيرفرات الحية الحقيقية</span></div><pre id="res-ide"></pre></div>
-                </div>
-            </div>
-
-            <div id="infra-code" class="app-section">
-                <div class="panel">
-                    <h2>🏗️ البنية التحتية ككود (Infrastructure as Code)</h2>
-                    <p>قم بأتمتة وتوليد ملفات إعدادات الشبكات والسيرفرات وحاويات الحوسبة السحابية:</p>
-                    <textarea id="prompt-infra" placeholder="مثال: اكتب ملف Kubernetes Deployment متكامل..."></textarea>
-                    <div class="action-row"><button onclick="executeAI('infra')" class="action-btn">توليد ملفات البنية التحتية 🚀</button></div>
-                    <div id="box-infra" class="response-container"><div class="output-header"><span>ملفات أتمتة البنية التحتية السحابية (IaC)</span></div><pre id="res-infra"></pre></div>
-                </div>
-            </div>
-
-            <div id="os-dev" class="app-section">
-                <div class="panel">
-                    <h2>💾 هندسة وبرمجة أنظمة التشغيل (OS Development)</h2>
-                    <p>قم بتوليد وفحص الشيفرات البرمجية منخفضة المستوى للأنظمة وإدارة النواة والذاكرة:</p>
-                    <textarea id="prompt-os" placeholder="مثال: اكتب دالة بلغة C والـ Assembly لتهيئة الـ GDT..."></textarea>
