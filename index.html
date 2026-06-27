@@ -56,7 +56,7 @@
 
     <header>
         <h1><span>DevAI</span> Core OS</h1>
-        <!-- عند الضغط على السطر بالأسفل ستفتح لك نافذة إدخال المفاتيح السرية بخصوصية تامة -->
+        <!-- عند الضغط على هذا السطر ستفتح لك نافذة إدخال المفاتيح بخصوصية تامة كما طلبت -->
         <div class="author" onclick="setupDeveloperKeys()">المطور ومؤسس النظام السحابي الفعلي (اضغط هنا لضبط المفاتيح السحابية ⚙️)</div>
     </header>
 
@@ -77,11 +77,10 @@
         </div>
 
         <div class="content-area">
-            <!-- 1. بيئة التطوير البرمجية -->
             <div id="ide-space" class="app-section active">
                 <div class="panel">
                     <h2>💻 بيئة التطوير البرمجية متعددة اللغات بالذكاء الحقيقي</h2>
-                    <p>اختر اللغة، واكتب طلبك ليقوم النظام بالاستدعاء الفعلي الفوري عبر السيرفر المتاح:</p>
+                    <p>اختر اللغة واكتب طلبك ليقوم النظام بالاستدعاء المباشر عبر السيرفرات الحية:</p>
                     <div class="selector-row">
                         <select id="ide-lang" class="select-input">
                             <option value="javascript">JavaScript / TypeScript</option>
@@ -105,7 +104,6 @@
                 </div>
             </div>
 
-            <!-- 2. قسم البنية التحتية ككود -->
             <div id="infra-code" class="app-section">
                 <div class="panel">
                     <h2>🏗️ البنية التحتية ككود (Infrastructure as Code)</h2>
@@ -116,7 +114,8 @@
                 </div>
             </div>
 
-            <!-- 3. قسم هندسة أنظمة التشغيل -->
             <div id="os-dev" class="app-section">
                 <div class="panel">
                     <h2>💾 هندسة وبرمجة أنظمة التشغيل (OS Development)</h2>
+                    <p>قم بتوليد وفحص الشيفرات البرمجية منخفضة المستوى للأنظمة وإدارة النواة والذاكرة:</p>
+                    <textarea id="prompt-os" placeholder="مثال: اكتب دالة بلغة C والـ Assembly لتهيئة الـ GDT..."></textarea>
