@@ -21,7 +21,7 @@
         header { background: linear-gradient(135deg, var(--bg-sidebar), var(--bg-main)); padding: 25px 30px; text-align: center; border-bottom: 1px solid var(--border); box-shadow: 0 4px 25px rgba(0,0,0,0.5); }
         header h1 { margin: 0; font-size: 2.2rem; color: #fff; text-shadow: 0 0 15px var(--accent-glow); }
         header h1 span { color: var(--accent); }
-        header .author { color: #f59e0b; font-size: 1.1rem; margin-top: 6px; font-weight: bold; }
+        header .author { color: #f59e0b; font-size: 1.1rem; margin-top: 6px; font-weight: bold; cursor: pointer; text-decoration: underline; }
         .main-layout { display: flex; flex: 1; flex-wrap: wrap; }
         .sidebar { width: 310px; background: var(--bg-sidebar); border-left: 1px solid var(--border); padding: 20px 10px; box-sizing: border-box; }
         .sidebar-title { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1.5px; padding: 10px 15px; font-weight: bold; border-bottom: 1px solid #1e293b; margin-bottom: 12px; }
@@ -56,7 +56,8 @@
 
     <header>
         <h1><span>DevAI</span> Core OS</h1>
-        <div class="author">المطور ومؤسس النظام السحابي الفعلي: [اسمك هنا]</div>
+        <!-- عند الضغط على السطر بالأسفل ستفتح لك نافذة إدخال المفاتيح السرية بخصوصية تامة -->
+        <div class="author" onclick="setupDeveloperKeys()">المطور ومؤسس النظام السحابي الفعلي (اضغط هنا لضبط المفاتيح السحابية ⚙️)</div>
     </header>
 
     <div class="main-layout">
@@ -70,7 +71,7 @@
             <button class="nav-btn" onclick="switchSection('os-dev', this)">💾 تطوير وهندسة أنظمة التشغيل</button>
             
             <div class="sidebar-title">الأمن والأعمال الذكية</div>
-            <button class="nav-btn" onclick="switchSection('tuning', this)">⚙️ centre ضبط وتطويع الـ AI</button>
+            <button class="nav-btn" onclick="switchSection('tuning', this)">⚙️ مركز ضبط وتطويع الـ AI</button>
             <button class="nav-btn" onclick="switchSection('cybersec', this)">🛡️ الأمن السيبراني وفحص الكود</button>
             <button class="nav-btn" onclick="switchSection('payments', this)">💳 بوابات وواجهات الدفع الحية</button>
         </div>
@@ -119,5 +120,3 @@
             <div id="os-dev" class="app-section">
                 <div class="panel">
                     <h2>💾 هندسة وبرمجة أنظمة التشغيل (OS Development)</h2>
-                    <p>قم بتوليد وفحص الشيفرات البرمجية منخفضة المستوى للأنظمة وإدارة النواة والذاكرة:</p>
-                    <textarea id="prompt-os" placeholder="مثال: اكتب دالة بلغة C والـ Assembly لتهيئة الـ GDT..."></textarea>
