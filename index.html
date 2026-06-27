@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DevAI Core OS - بيئة المعالجة الثلاثية الحقيقية</title>
+    <title>DevAI Core OS - البيئة الهندسية السحابية الشاملة</title>
     <style>
         :root {
             --bg-main: #040711;
@@ -46,7 +46,7 @@
         .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #45475a; }
         .status-dot.active { background: var(--success); box-shadow: 0 0 8px var(--success); }
         .response-container { margin-top: 25px; background: #040711; border-radius: 8px; border: 1px solid var(--border); display: none; overflow: hidden; }
-        .response-header { background: #0a0f1d; padding: 12px 15px; font-size: 0.85rem; color: var(--accent); display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); }
+        .output-header { background: #0a0f1d; padding: 12px 15px; font-size: 0.85rem; color: var(--accent); display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); }
         pre { margin: 0; padding: 20px; overflow-x: auto; color: #38bdf8; font-family: 'Courier New', Courier, monospace; font-size: 1rem; line-height: 1.6; white-space: pre-wrap; text-align: left; direction: ltr; }
         @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         footer { text-align: center; padding: 25px; color: #64748b; font-size: 0.85rem; border-top: 1px solid var(--border); background: var(--bg-sidebar); }
@@ -56,7 +56,7 @@
 
     <header>
         <h1><span>DevAI</span> Core OS</h1>
-        <div class="author">المطور ومؤسس النظام السحابي الفعلي:[LOTAIRI]</div>
+        <div class="author">المطور ومؤسس النظام السحابي الفعلي: [اسمك هنا]</div>
     </header>
 
     <div class="main-layout">
@@ -70,18 +70,17 @@
             <button class="nav-btn" onclick="switchSection('os-dev', this)">💾 تطوير وهندسة أنظمة التشغيل</button>
             
             <div class="sidebar-title">الأمن والأعمال الذكية</div>
-            <button class="nav-btn" onclick="switchSection('tuning', this)">⚙️ مركز ضبط وتطويع الـ AI</button>
+            <button class="nav-btn" onclick="switchSection('tuning', this)">⚙️ centre ضبط وتطويع الـ AI</button>
             <button class="nav-btn" onclick="switchSection('cybersec', this)">🛡️ الأمن السيبراني وفحص الكود</button>
             <button class="nav-btn" onclick="switchSection('payments', this)">💳 بوابات وواجهات الدفع الحية</button>
         </div>
 
         <div class="content-area">
-            
-            <!-- قسم بيئة التطوير البرمجية -->
+            <!-- 1. بيئة التطوير البرمجية -->
             <div id="ide-space" class="app-section active">
                 <div class="panel">
                     <h2>💻 بيئة التطوير البرمجية متعددة اللغات بالذكاء الحقيقي</h2>
-                    <p>اختر اللغة، واكتب طلبك ليقوم النظام بالاستدعاء الفعلي الفوري وتوليد الأكواد النظيفة:</p>
+                    <p>اختر اللغة، واكتب طلبك ليقوم النظام بالاستدعاء الفعلي الفوري عبر السيرفر المتاح:</p>
                     <div class="selector-row">
                         <select id="ide-lang" class="select-input">
                             <option value="javascript">JavaScript / TypeScript</option>
@@ -91,33 +90,32 @@
                             <option value="rust">Rust</option>
                         </select>
                     </div>
-                    <textarea id="prompt-ide" placeholder="اكتب دالة برمجية أو ضع كوداً ليتم معالجته عبر السيرفرات الحية..."></textarea>
-                    
+                    <textarea id="prompt-ide" placeholder="اكتب دالة برمجية أو ضع كوداً ليتم معالجته عبر النماذج الحية..."></textarea>
                     <div class="action-row">
                         <div class="status-rack">
-                            <div class="rack-item"><span id="rack-gemini" class="status-dot"></span> 1. Google Gemini</div>
-                            <div class="rack-item"><span id="rack-groq" class="status-dot"></span> 2. Groq Cloud (Llama 3)</div>
-                            <div class="rack-item"><span id="rack-hf" class="status-dot"></span> 3. Hugging Face</div>
+                            <div class="rack-item"><span id="rack-colab" class="status-dot"></span> 1. Colab Server</div>
+                            <div class="rack-item"><span id="rack-gemini" class="status-dot"></span> 2. Google Gemini</div>
+                            <div class="rack-item"><span id="rack-groq" class="status-dot"></span> 3. Groq (Llama 3)</div>
+                            <div class="rack-item"><span id="rack-hf" class="status-dot"></span> 4. Hugging Face</div>
                         </div>
                         <button onclick="executeAI('ide')" class="action-btn">تحليل وتوليد الكود 🚀</button>
                     </div>
-                    
-                    <div id="box-ide" class="response-container"><div class="response-header"><span>مخرجات السيرفرات الحية الحقيقية</span></div><pre id="res-ide"></pre></div>
+                    <div id="box-ide" class="response-container"><div class="output-header"><span>مخرجات السيرفرات الحية الحقيقية</span></div><pre id="res-ide"></pre></div>
                 </div>
             </div>
 
-            <!-- قسم البنية التحتية ككود -->
+            <!-- 2. قسم البنية التحتية ككود -->
             <div id="infra-code" class="app-section">
                 <div class="panel">
                     <h2>🏗️ البنية التحتية ككود (Infrastructure as Code)</h2>
                     <p>قم بأتمتة وتوليد ملفات إعدادات الشبكات والسيرفرات وحاويات الحوسبة السحابية:</p>
                     <textarea id="prompt-infra" placeholder="مثال: اكتب ملف Kubernetes Deployment متكامل..."></textarea>
                     <div class="action-row"><button onclick="executeAI('infra')" class="action-btn">توليد ملفات البنية التحتية 🚀</button></div>
-                    <div id="box-infra" class="response-container"><div class="response-header"><span>ملفات أتمتة البنية التحتية السحابية (IaC)</span></div><pre id="res-infra"></pre></div>
+                    <div id="box-infra" class="response-container"><div class="output-header"><span>ملفات أتمتة البنية التحتية السحابية (IaC)</span></div><pre id="res-infra"></pre></div>
                 </div>
             </div>
 
-            <!-- قسم هندسة أنظمة التشغيل -->
+            <!-- 3. قسم هندسة أنظمة التشغيل -->
             <div id="os-dev" class="app-section">
                 <div class="panel">
                     <h2>💾 هندسة وبرمجة أنظمة التشغيل (OS Development)</h2>
