@@ -1,3 +1,12 @@
+// devai-continuous-fixed.js
+// Single-file server + frontend (fixed HTML embedding).
+// Usage:
+// 1) npm install express body-parser cors dotenv openai uuid
+// 2) create .env with OPENAI_API_KEY and SERVER_API_KEY
+// 3) node devai-continuous-fixed.js
+//
+// Security: local development only. Do not expose publicly without hardening.
+
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
@@ -5,7 +14,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
-const { OpenAI } = require('openai');
+const { Configuration, OpenAIApi } = require('openai');
 
 const PORT = process.env.PORT || 8080;
 const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
@@ -16,202 +25,316 @@ const CHAT_MODEL = process.env.CHAT_MODEL || 'gpt-4o-mini';
 const MEMORY_FILE = path.join(__dirname, 'memory.json');
 const TRAINING_FILE = path.join(__dirname, 'fine_tune_data.jsonl');
 
-const TRAIN_INTERVAL_MS = parseInt(process.env.TRAIN_INTERVAL_MS || String(1000 * 60 * 60 * 24)); 
+const TRAIN_INTERVAL_MS = parseInt(process.env.TRAIN_INTERVAL_MS || String(1000 * 60 * 60 * 24));
 const MIN_TRAIN_EXAMPLES = parseInt(process.env.MIN_TRAIN_EXAMPLES || '20', 10);
 const ALLOW_AUTO_FINE_TUNE = (process.env.ALLOW_AUTO_FINE_TUNE || 'false').toLowerCase() === 'true';
+const CONFIRM_FINE_TUNE = (process.env.CONFIRM_FINE_TUNE || 'no').toLowerCase() === 'yes';
 
 if (!OPENAI_KEY) console.warn('⚠️ OPENAI_API_KEY غير معرفة.');
 if (!SERVER_API_KEY) console.warn('⚠️ SERVER_API_KEY غير معرفة.');
 
-const openai = new OpenAI({ apiKey: OPENAI_KEY });
+const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_KEY }));
 
+// --- load memory from disk ---
 let memory = [];
 try {
   if (fs.existsSync(MEMORY_FILE)) {
     memory = JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf8') || '[]');
+    console.log(`Loaded ${memory.length} memory items.`);
   }
 } catch (e) {
   console.warn('فشل تحميل ملف الذاكرة:', e.message);
 }
-
 function persistMemory() {
-  try {
-    fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2), 'utf8');
-  } catch (e) {
-    console.error('فشل حفظ الذاكرة:', e.message);
-  }
+  try { fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2), 'utf8'); } catch (e) { console.error('فشل حفظ الذاكرة:', e.message); }
 }
 
-function dot(a, b) {
-  let s = 0;
-  for (let i = 0; i < Math.min(a.length, b.length); i++) s += a[i] * b[i];
-  return s;
-}
+// vector math
+function dot(a, b) { let s = 0; for (let i = 0; i < Math.min(a.length, b.length); i++) s += a[i] * b[i]; return s; }
 function norm(a) { return Math.sqrt(dot(a, a)) || 1; }
 function cosine(a, b) { return dot(a, b) / (norm(a) * norm(b)); }
 
+// OpenAI wrappers
 async function getEmbeddingOpenAI(text) {
   if (!OPENAI_KEY) throw new Error('OPENAI_API_KEY غير مهيأة.');
-  const resp = await openai.embeddings.create({
-    model: EMBED_MODEL,
-    input: text
-  });
-  return resp.data[0].embedding;
+  const resp = await openai.createEmbedding({ model: EMBED_MODEL, input: text });
+  return resp.data.data[0].embedding;
 }
-
 async function chatOpenAI(messages, model = CHAT_MODEL) {
   if (!OPENAI_KEY) throw new Error('OPENAI_API_KEY غير مهيأة.');
-  const resp = await openai.chat.completions.create({
+  const resp = await openai.createChatCompletion({
     model,
     messages,
     temperature: 0.2,
     max_tokens: 800
   });
-  return resp.choices[0].message.content;
+  return resp.data.choices[0].message.content;
 }
 
+// memory operations
 async function addMemoryItem(text, metadata = {}) {
-  const qEmb = await getEmbeddingOpenAI(text);
-  const item = {
-    id: uuidv4(),
-    text,
-    embedding: qEmb,
-    metadata: { ...metadata, createdAt: Date.now() }
-  };
+  const embedding = await getEmbeddingOpenAI(text);
+  const item = { id: uuidv4(), text, embedding, metadata: { ...metadata, createdAt: Date.now() } };
   memory.push(item);
   persistMemory();
   return item.id;
 }
-
 async function queryMemory(queryText, topK = 5) {
   if (!memory.length) return [];
   const qEmb = await getEmbeddingOpenAI(queryText);
-  const scored = memory.map(m => ({
-    id: m.id,
-    text: m.text,
-    metadata: m.metadata,
-    score: cosine(qEmb, m.embedding || [])
-  }));
+  const scored = memory.map(m => ({ id: m.id, text: m.text, metadata: m.metadata, score: cosine(qEmb, m.embedding || []) }));
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, topK);
 }
 
+// build training data and optionally trigger fine-tune skeleton
 async function buildTrainingDataAndMaybeFineTune() {
-  const candidates = memory.slice(-1000); 
-  if (candidates.length < MIN_TRAIN_EXAMPLES) return;
-
-  const stream = fs.createWriteStream(TRAINING_FILE, { flags: 'w' });
-  candidates.forEach(item => {
-    const trainingLine = {
-      messages: [
-        { role: "system", content: "أنت مساعد ذكي يتذكر التفاعلات السابقة بدقة." },
-        { role: "user", content: `تذكر هذه المعلومة: ${item.text}` },
-        { role: "assistant", content: `تم الحفظ بنجاح في الذاكرة المستمرة.` }
-      ]
-    };
-    stream.write(JSON.stringify(trainingLine) + '\n');
-  });
-  stream.end();
-
-  if (ALLOW_AUTO_FINE_TUNE) {
-    try {
-      const fileStream = fs.createReadStream(TRAINING_FILE);
-      const fileObj = await openai.files.create({ file: fileStream, purpose: 'fine-tune' });
-      await openai.fineTuning.jobs.create({ training_file: fileObj.id, model: CHAT_MODEL });
-    } catch (err) {
-      console.error('[Worker] فشل التدريب التلقائي:', err.message);
+  const candidates = memory.slice(-1000);
+  if (candidates.length < MIN_TRAIN_EXAMPLES) {
+    console.log(`[worker] insufficient candidates: ${candidates.length} < ${MIN_TRAIN_EXAMPLES}`);
+    // still write file (could be empty)
+  }
+  const pairs = [];
+  for (const item of candidates) {
+    const t = item.text || '';
+    if (t.startsWith('USER:') && t.includes('ASSISTANT:')) {
+      const [u, a] = t.split('ASSISTANT:');
+      const prompt = u.replace(/^USER:\s*/i, '').trim();
+      const completion = a.trim();
+      if (prompt && completion) pairs.push({ prompt, completion });
     }
+  }
+  // dedupe
+  const seen = new Set();
+  const unique = [];
+  for (const p of pairs) {
+    const key = (p.prompt + '||' + p.completion).slice(0, 2000);
+    if (!seen.has(key)) { seen.add(key); unique.push(p); }
+  }
+  const w = fs.createWriteStream(TRAINING_FILE, { flags: 'w' });
+  unique.forEach(p => {
+    const obj = { prompt: p.prompt + '\n\n###\n\n', completion: ' ' + p.completion + ' ' };
+    w.write(JSON.stringify(obj) + '\n');
+  });
+  w.end();
+  console.log(`[worker] wrote ${unique.length} training pairs to ${TRAINING_FILE}`);
+
+  if (ALLOW_AUTO_FINE_TUNE && CONFIRM_FINE_TUNE && unique.length >= MIN_TRAIN_EXAMPLES) {
+    console.log('[worker] auto fine-tune requested but not implemented in this safe prototype.');
+    // Implement provider-specific fine-tune upload here only after careful checks.
   }
 }
 
-setInterval(buildTrainingDataAndMaybeFineTune, TRAIN_INTERVAL_MS);
+// schedule worker
+setInterval(() => {
+  buildTrainingDataAndMaybeFineTune().catch(e => console.warn('[worker] error:', e.message));
+}, TRAIN_INTERVAL_MS);
 
+// --- Express server and endpoints ---
 const app = express();
 app.use(cors());
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '2mb' }));
 
-function authenticate(req, res, next) {
-  if (!SERVER_API_KEY) return next();
-  const apiKey = req.headers['x-api-key'] || req.query.apiKey;
-  if (apiKey === SERVER_API_KEY) return next();
-  return res.status(401).json({ error: 'غير مصرح به. مفتاح API خاطئ أو مفقود.' });
+function requireServerKey(req, res, next) {
+  if (!SERVER_API_KEY) return res.status(500).json({ error: 'SERVER_API_KEY not configured on server' });
+  const key = req.headers['x-api-key'] || req.query.api_key;
+  if (key !== SERVER_API_KEY) return res.status(401).json({ error: 'Unauthorized' });
+  next();
 }
 
-// الواجهة الرسومية المصححة والمحمية من التداخل النصي
+// serve fixed HTML (no stray code)
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(`
-    <!DOCTYPE html>
-    <html lang="ar" dir="rtl">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>نظام الذاكرة المستمرة الذكي</title>
-      <link href="https://googleapis.com" rel="stylesheet">
-      <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Cairo', sans-serif; }
-        body { background-color: #0f172a; color: #f8fafc; padding: 2rem; display: flex; justify-content: center; }
-        .container { max-width: 1200px; width: 100%; display: flex; flex-direction: column; gap: 1.5rem; }
-        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; padding-bottom: 1rem; }
-        h1 { font-size: 1.8rem; color: #38bdf8; font-weight: 700; }
-        .api-input-group { display: flex; align-items: center; gap: 0.5rem; background: #1e293b; padding: 0.5rem 1rem; border-radius: 8px; border: 1px solid #334155; }
-        .api-input-group input { background: transparent; border: none; color: #fff; outline: none; font-size: 0.9rem; width: 180px; }
-        .grid { display: grid; grid-template-columns: 1fr 2fr; gap: 1.5rem; }
-        @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
-        .card { background: #1e293b; border-radius: 12px; padding: 1.5rem; border: 1px solid #334155; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
-        .card h2 { font-size: 1.2rem; margin-bottom: 1rem; color: #e2e8f0; display: flex; align-items: center; gap: 0.5rem; }
-        .stat-box { display: flex; justify-content: space-between; align-items: center; background: #0f172a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; }
-        .stat-val { font-size: 1.5rem; font-weight: bold; color: #10b981; }
-        textarea, input[type="text"] { width: 100%; padding: 0.75rem; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #fff; resize: none; margin-bottom: 1rem; outline: none; transition: border 0.2s; }
-        textarea:focus, input[type="text"]:focus { border-color: #38bdf8; }
-        button { width: 100%; padding: 0.75rem; background: #38bdf8; color: #0f172a; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; transition: background 0.2s; font-size: 1rem; }
-        button:hover { background: #7dd3fc; }
-        button.secondary { background: #475569; color: #fff; margin-top: 0.5rem; }
-        button.secondary:hover { background: #64748b; }
-        .chat-area { height: 500px; display: flex; flex-direction: column; }
-        .chat-messages { flex: 1; overflow-y: auto; background: #0f172a; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.75rem; border: 1px solid #334155; }
-        .msg { max-width: 80%; padding: 0.75rem 1rem; border-radius: 12px; line-height: 1.5; font-size: 0.95rem; }
-        .msg.user { background: #38bdf8; color: #0f172a; align-self: flex-start; border-radius: 12px 12px 0 12px; }
-        .msg.bot { background: #334155; color: #f8fafc; align-self: flex-end; border-radius: 12px 12px 12px 0; }
-        .chat-input-box { display: flex; gap: 0.5rem; }
-        .chat-input-box input { margin-bottom: 0; flex: 1; }
-        .chat-input-box button { width: auto; padding: 0 1.5rem; }
-        .notification { background: #10b981; color: white; padding: 0.7rem 1.5rem; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); border-radius: 8px; font-size: 0.9rem; display: none; z-index: 100; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); }
-      </style>
-    </head>
-    <body>
-      <div class="notification" id="toast"></div>
-      <div class="container">
-        <header>
-          <h1>🧠 مستودع التعلم والذاكرة الرقمية</h1>
-          <div class="api-input-group">
-            <span>🔑 مفتاح الـ API:</span>
-            <input type="password" id="apiKeyInput" placeholder="أدخل SERVER_API_KEY...">
-          </div>
-        </header>
+  res.send(FRONTEND_HTML);
+});
 
-        <div class="grid">
-          <div style="display:flex; flex-direction:column; gap:1.5rem;">
-            <div class="card">
-              <h2>📊 حالة الذاكرة المتجهية</h2>
-              <div class="stat-box">
-                <span>إجمالي الأفكار المحفوظة:</span>
-                <span class="stat-val" id="memCount">-</span>
-              </div>
-              <p style="font-size:0.85rem; color:#94a3b8; line-height:1.4;">النظام يحفظ المعلومات دلالياً في قاعدة بيانات متجهية محلية (RAG).</p>
-              <button class="secondary" onclick="triggerTrain()">⚡ تحديث ملفات التدريب يدوياً</button>
-            </div>
+// memory add
+app.post('/api/memory/add', requireServerKey, async (req, res) => {
+  try {
+    const { text, metadata } = req.body;
+    if (!text) return res.status(400).json({ error: 'text required' });
+    const id = await addMemoryItem(text, metadata || {});
+    return res.json({ ok: true, id });
+  } catch (e) {
+    console.error('/api/memory/add', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
 
-            <div class="card">
-              <h2>📥 حقن حقيقة أو معلومة جديدة</h2>
-              <textarea id="memoryText" rows="4" placeholder="اكتب معلومة جديدة هنا ليتم استدعاؤها تلقائياً أثناء الدردشة..."></textarea>
-              <button onclick="addMemory()">حفظ وتشفير بالـ Vector</button>
-            </div>
-          </div>
+// memory query
+app.post('/api/memory/query', requireServerKey, async (req, res) => {
+  try {
+    const { query, topK = 5 } = req.body;
+    if (!query) return res.status(400).json({ error: 'query required' });
+    const matches = await queryMemory(query, topK);
+    return res.json({ matches });
+  } catch (e) {
+    console.error('/api/memory/query', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
 
-          <div class="card chat-area">
-            <h2>💬 غرفة دردشة مستندة للذاكرة المستمرة</h2>
-            <div class="chat-messages" id="chatMessages">
-              <div class="msg bot">مرحباً بك! اكتب أي سؤال وسأقوم باستخراج الحقائق المخزنة بذاكرتي فوراً للرد عليك بدقة.</div>
-            </div>
-            <div class="chat-input-box">
+// chat
+app.post('/api/chat', requireServerKey, async (req, res) => {
+  try {
+    const { messages = [], topK = 5, auto_save = true, model } = req.body;
+    if (!Array.isArray(messages) || messages.length === 0) return res.status(400).json({ error: 'messages required' });
+
+    const userMessage = messages.slice().reverse().find(m => m.role === 'user')?.content || messages[messages.length - 1].content;
+
+    let retrievedText = '';
+    try {
+      const matches = await queryMemory(userMessage, topK);
+      if (matches && matches.length) retrievedText = matches.map(m => `Context (score:${(m.score||0).toFixed(3)}): ${m.text}`).join('\n---\n');
+    } catch (e) {
+      console.warn('RAG retrieval failed:', e.message);
+    }
+
+    const systemMessages = [{ role: 'system', content: 'أنت مساعد تقني. استخدم أي سياق مرفق لتحسين الإجابة.' }];
+    if (retrievedText) systemMessages.push({ role: 'system', content: 'سياقات مسترجعة:\n' + retrievedText });
+
+    const finalMessages = [...systemMessages, ...messages];
+    const chatModel = model || CHAT_MODEL;
+    const assistantText = await chatOpenAI(finalMessages, chatModel);
+
+    if (auto_save) {
+      try {
+        const combined = `USER: ${userMessage}\nASSISTANT: ${assistantText}`;
+        await addMemoryItem(combined, { source: 'auto' });
+      } catch (e) {
+        console.warn('Auto-save failed:', e.message);
+      }
+    }
+
+    return res.json({ response: assistantText });
+  } catch (e) {
+    console.error('/api/chat', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// admin trigger train
+app.post('/api/admin/trigger-train', requireServerKey, async (req, res) => {
+  try {
+    await buildTrainingDataAndMaybeFineTune();
+    return res.json({ ok: true, msg: 'Training task executed (file generated).' });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/health', (req, res) => res.json({ ok: true }));
+
+app.listen(PORT, () => {
+  console.log(`Server running at http://localhost:${PORT}/`);
+  console.log('Memory:', MEMORY_FILE, 'Training file:', TRAINING_FILE);
+});
+
+// ----------------- FRONTEND HTML (fixed; no stray JS code embedded) -----------------
+const FRONTEND_HTML = `
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>نظام الذاكرة المستمرة</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;background:#071128;color:#e8f6ff;margin:16px}
+    .panel{background:#0b1b2b;padding:14px;border-radius:10px;margin-bottom:12px}
+    input,textarea{width:100%;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.05);background:#081426;color:inherit}
+    button{padding:8px 12px;border-radius:8px;border:none;background:#00bfff;color:#021022;font-weight:700;cursor:pointer}
+    pre{background:#06121a;padding:10px;border-radius:8px;white-space:pre-wrap;color:#cfefff}
+    .row{display:flex;gap:8px}
+    .muted{color:#9fb6c9;font-size:0.9rem}
+    .chat-messages{max-height:360px;overflow:auto;margin-bottom:8px}
+    .msg{padding:8px;border-radius:8px;margin-bottom:6px}
+    .msg.user{background:#38bdf8;color:#021022;text-align:left}
+    .msg.bot{background:#334155;color:#f8fafc;text-align:left}
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h2>DevAI — نظام تعلّم مستمر محلي</h2>
+    <div class="muted">أدخل SERVER API KEY (x-api-key) الموجود في ملف .env ثم جرّب. لا تشغّل هذا على شبكة عامة دون الحماية.</div>
+
+    <label>SERVER API KEY (x-api-key)</label>
+    <input id="serverKey" placeholder="ضع SERVER_API_KEY هنا">
+
+    <label>نص / سؤال</label>
+    <textarea id="prompt" rows="4" placeholder="اطرح سؤالك هنا..."></textarea>
+
+    <div class="row" style="margin-top:8px">
+      <button id="send">أرسل (RAG → Chat)</button>
+      <button id="save">احفظ للذاكرة</button>
+      <button id="queryMem">استرجع ذاكرة (topK=5)</button>
+      <button id="triggerTrain">تشغيل تدريب يدوي</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>الاستجابة</h3>
+    <div id="out"></div>
+    <div class="chat-messages" id="chatMessages"></div>
+  </div>
+
+  <div class="panel">
+    <h3>سجل</h3>
+    <pre id="log">لا شيء بعد.</pre>
+  </div>
+
+<script>
+  function log(msg){ const p=document.getElementById('log'); p.textContent = new Date().toLocaleTimeString() + ' — ' + msg + '\\n' + p.textContent; }
+  async function api(path, body){
+    const key = document.getElementById('serverKey').value.trim();
+    if(!key) return alert('ضع SERVER_API_KEY في الحقل العلوي');
+    const res = await fetch('/api/' + path, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','x-api-key': key},
+      body: JSON.stringify(body)
+    });
+    return res.json();
+  }
+
+  document.getElementById('send').onclick = async ()=>{
+    const prompt = document.getElementById('prompt').value.trim();
+    if(!prompt) return alert('اكتب نصاً');
+    log('إرسال طلب للدردشة...');
+    const messages = [{role:'user', content: prompt}];
+    const r = await api('chat', { messages, topK:5, auto_save:true });
+    if(r.error) { log('خطأ: ' + r.error); alert('خطأ: ' + r.error); return; }
+    document.getElementById('out').innerHTML = '<pre>' + (r.response || JSON.stringify(r)) + '</pre>';
+    const cm = document.getElementById('chatMessages');
+    const u = document.createElement('div'); u.className='msg user'; u.textContent = prompt; cm.appendChild(u);
+    const b = document.createElement('div'); b.className='msg bot'; b.textContent = r.response; cm.appendChild(b);
+    cm.scrollTop = cm.scrollHeight;
+    log('استلمت استجابة');
+  };
+
+  document.getElementById('save').onclick = async ()=>{
+    const prompt = document.getElementById('prompt').value.trim();
+    if(!prompt) return alert('اكتب نصاً للحفظ');
+    const r = await api('memory/add', { text: prompt });
+    if(r.error) { alert('خطأ: ' + r.error); return; }
+    alert('تم الحفظ: ' + (r.id||''));
+    log('حفظت ذاكرة ' + (r.id||''));
+  };
+
+  document.getElementById('queryMem').onclick = async ()=>{
+    const prompt = document.getElementById('prompt').value.trim();
+    if(!prompt) return alert('اكتب نصاً للاستعلام');
+    const r = await api('memory/query', { query: prompt, topK: 5 });
+    if(r.error) { alert('خطأ: ' + r.error); return; }
+    document.getElementById('out').innerHTML = '<pre>' + JSON.stringify(r.matches, null, 2) + '</pre>';
+    log('استرجعت ' + (r.matches?.length || 0) + ' نتيجة');
+  };
+
+  document.getElementById('triggerTrain').onclick = async ()=>{
+    const r = await api('admin/trigger-train', {});
+    if(r.error) { alert('خطأ: ' + r.error); return; }
+    alert(r.msg || 'تم تشغيل مهمة التدريب يدوياً.');
+    log('تشغيل تدريب يدوي');
+  };
+</script>
+</body>
+</html>
+`;
