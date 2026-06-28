@@ -1,433 +1,375 @@
-<!doctype html>
+// devai-continuous.js
+// Single-file continuous-learning prototype (local).
+//
+// Features:
+// - Frontend served at / (simple page) to send prompt, save, query memory.
+// - Backend endpoints protected by x-api-key: /api/chat, /api/memory/add, /api/memory/query, /api/admin/trigger-train
+// - Local vector store persisted to memory.json (embeddings via OpenAI).
+// - Background worker that aggregates new items into fine_tune_data.jsonl periodically.
+// - Optional automatic fine-tune (requires OpenAI API support + explicit env flags).
+//
+// Setup:
+// 1) npm init -y
+// 2) npm install express body-parser cors dotenv openai uuid
+// 3) create .env with:
+//    OPENAI_API_KEY=sk-...
+//    SERVER_API_KEY=any-secret-you-chose
+//    PORT=8080
+//    EMBED_MODEL=text-embedding-3-small
+//    CHAT_MODEL=gpt-4o-mini
+//    TRAIN_INTERVAL_MS=86400000    # default 24h
+//    MIN_TRAIN_EXAMPLES=20
+//    ALLOW_AUTO_FINE_TUNE=false
+//    CONFIRM_FINE_TUNE=no
+//
+// 4) node devai-continuous.js
+//
+// Security note: Do NOT expose to the public without proper hardening (HTTPS, auth, rate limiting).
+
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const { v4: uuidv4 } = require('uuid');
+const { Configuration, OpenAIApi } = require('openai');
+
+const PORT = process.env.PORT || 8080;
+const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
+const SERVER_API_KEY = process.env.SERVER_API_KEY || '';
+const EMBED_MODEL = process.env.EMBED_MODEL || 'text-embedding-3-small';
+const CHAT_MODEL = process.env.CHAT_MODEL || 'gpt-4o-mini';
+const MEMORY_FILE = path.join(__dirname, 'memory.json');
+const TRAINING_FILE = path.join(__dirname, 'fine_tune_data.jsonl');
+const TRAIN_INTERVAL_MS = parseInt(process.env.TRAIN_INTERVAL_MS || String(1000 * 60 * 60 * 24)); // default 24h
+const MIN_TRAIN_EXAMPLES = parseInt(process.env.MIN_TRAIN_EXAMPLES || '20', 10);
+const ALLOW_AUTO_FINE_TUNE = (process.env.ALLOW_AUTO_FINE_TUNE || 'false').toLowerCase() === 'true';
+const CONFIRM_FINE_TUNE = (process.env.CONFIRM_FINE_TUNE || 'no').toLowerCase() === 'yes';
+
+if (!OPENAI_KEY) console.warn('⚠️ OPENAI_API_KEY not set. Embeddings/chat will fail until you set it.');
+if (!SERVER_API_KEY) console.warn('⚠️ SERVER_API_KEY not set. API endpoints will be unprotected until configured.');
+
+const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_KEY }));
+
+// Utilities: local memory (persisted)
+let memory = []; // each item: { id, text, embedding, metadata: { createdAt, source } }
+try {
+  if (fs.existsSync(MEMORY_FILE)) {
+    memory = JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf8') || '[]');
+    console.log(`Loaded ${memory.length} memory items from ${MEMORY_FILE}`);
+  }
+} catch (e) {
+  console.warn('Could not load memory file:', e.message);
+}
+let lastTrainingTimestamp = 0;
+if (fs.existsSync(TRAINING_FILE)) {
+  lastTrainingTimestamp = fs.statSync(TRAINING_FILE).mtimeMs;
+}
+
+function persistMemory() {
+  try {
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Persist memory failed:', e.message);
+  }
+}
+
+function dot(a, b) { let s = 0; for (let i = 0; i < Math.min(a.length, b.length); i++) s += a[i] * b[i]; return s; }
+function norm(a) { return Math.sqrt(dot(a, a)) || 1; }
+function cosine(a, b) { return dot(a, b) / (norm(a) * norm(b)); }
+
+// OpenAI helpers
+async function getEmbeddingOpenAI(text) {
+  if (!OPENAI_KEY) throw new Error('OPENAI_API_KEY not configured');
+  const resp = await openai.createEmbedding({ model: EMBED_MODEL, input: text });
+  return resp.data.data[0].embedding;
+}
+async function chatOpenAI(messages, model = CHAT_MODEL) {
+  if (!OPENAI_KEY) throw new Error('OPENAI_API_KEY not configured');
+  const resp = await openai.createChatCompletion({ model, messages, temperature: 0.2, max_tokens: 800 });
+  return resp.data.choices[0].message.content;
+}
+
+// Memory ops
+async function addMemoryItem(text, metadata = {}) {
+  const emb = await getEmbeddingOpenAI(text);
+  const item = { id: uuidv4(), text, embedding: emb, metadata: { ...metadata, createdAt: Date.now() } };
+  memory.push(item);
+  persistMemory();
+  return item.id;
+}
+async function queryMemory(queryText, topK = 5) {
+  if (!memory.length) return [];
+  const qEmb = await getEmbeddingOpenAI(queryText);
+  const scored = memory.map(m => ({ id: m.id, text: m.text, metadata: m.metadata, score: cosine(qEmb, m.embedding || []) }));
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, topK);
+}
+
+// Background trainer: prepare fine_tune_data.jsonl from new memory items
+async function buildTrainingDataAndMaybeFineTune() {
+  console.log(`[worker] Building training data — memory size: ${memory.length}`);
+  // Collect only items added since lastTrainingTimestamp (simple heuristic)
+  const newItems = memory.filter(m => (m.metadata && m.metadata.createdAt) && m.metadata.createdAt > lastTrainingTimestamp);
+  // also include older items if small
+  const candidates = newItems.length ? newItems : memory.slice(-1000);
+
+  // Extract candidate training pairs: items whose text includes both USER: and ASSISTANT:
+  const pairs = [];
+  for (const it of candidates) {
+    const t = it.text || '';
+    if (t.startsWith('USER:') && t.includes('ASSISTANT:')) {
+      const [u, a] = t.split('ASSISTANT:');
+      const prompt = u.replace(/^USER:\s*/i, '').trim();
+      const completion = a.trim();
+      if (prompt && completion) pairs.push({ prompt, completion });
+    }
+  }
+
+  // Deduplicate by hash of prompt+completion
+  const seen = new Set();
+  const uniq = [];
+  for (const p of pairs) {
+    const key = (p.prompt + '||' + p.completion).slice(0, 3000);
+    if (!seen.has(key)) { seen.add(key); uniq.push(p); }
+  }
+
+  if (uniq.length < MIN_TRAIN_EXAMPLES) {
+    console.log(`[worker] Found ${uniq.length} training pairs (< MIN_TRAIN_EXAMPLES=${MIN_TRAIN_EXAMPLES}). Writing file but skipping auto-fine-tune.`);
+  } else {
+    console.log(`[worker] Found ${uniq.length} training pairs (>= MIN_TRAIN_EXAMPLES=${MIN_TRAIN_EXAMPLES}).`);
+  }
+
+  // Write JSONL
+  const w = fs.createWriteStream(TRAINING_FILE);
+  for (const p of uniq) {
+    const obj = { prompt: p.prompt + '\n\n###\n\n', completion: ' ' + p.completion + ' ' };
+    w.write(JSON.stringify(obj) + '\n');
+  }
+  w.end();
+  lastTrainingTimestamp = Date.now();
+  console.log(`[worker] Wrote ${uniq.length} training pairs to ${TRAINING_FILE}`);
+
+  // Optionally attempt auto fine-tune (protected by two env flags)
+  if (ALLOW_AUTO_FINE_TUNE && CONFIRM_FINE_TUNE && uniq.length >= MIN_TRAIN_EXAMPLES) {
+    console.log('[worker] ALLOW_AUTO_FINE_TUNE and CONFIRM_FINE_TUNE set: attempting to upload & create fine-tune job (may fail depending on provider API).');
+    try {
+      // OLD OpenAI legacy flow: createFile + createFineTune (may require different API for newer SDKs)
+      // We'll attempt to use the "files" and "fineTunes" endpoints via openai.request if available.
+      // Use cautious approach: upload file as multipart/form-data (SDK helper may differ). Here we'll fallback to logging instructions.
+      console.log('[worker] Attempting automatic fine-tune is not implemented in this prototype to avoid destructive operations. Please run fine-tune manually using the generated file:', TRAINING_FILE);
+      // If you want this automated, I can add implementation for your provider after you confirm provider/version.
+    } catch (e) {
+      console.warn('[worker] Auto fine-tune failed:', e.message);
+    }
+  } else {
+    if (ALLOW_AUTO_FINE_TUNE) {
+      console.log('[worker] Auto fine-tune flags require CONFIRM_FINE_TUNE=yes to proceed.');
+    }
+  }
+}
+
+// schedule worker
+setInterval(() => {
+  buildTrainingDataAndMaybeFineTune().catch(e => console.warn('[worker] error', e.message));
+}, TRAIN_INTERVAL_MS);
+
+// ---------- Express server and simple frontend ----------
+const app = express();
+app.use(cors());
+app.use(bodyParser.json({ limit: '2mb' }));
+
+function requireServerKey(req, res, next) {
+  if (!SERVER_API_KEY) return res.status(500).json({ error: 'SERVER_API_KEY not configured on server' });
+  const key = req.headers['x-api-key'] || req.query.api_key;
+  if (key !== SERVER_API_KEY) return res.status(401).json({ error: 'Unauthorized - provide x-api-key' });
+  next();
+}
+
+app.get('/', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(INDEX_HTML);
+});
+
+// Add memory (client -> server)
+app.post('/api/memory/add', requireServerKey, async (req, res) => {
+  try {
+    const { text, metadata } = req.body;
+    if (!text) return res.status(400).json({ error: 'text required' });
+    const id = await addMemoryItem(text, metadata || {});
+    return res.json({ ok: true, id });
+  } catch (e) {
+    console.error('/api/memory/add', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// Query memory
+app.post('/api/memory/query', requireServerKey, async (req, res) => {
+  try {
+    const { query, topK = 5 } = req.body;
+    if (!query) return res.status(400).json({ error: 'query required' });
+    const matches = await queryMemory(query, topK);
+    return res.json({ matches });
+  } catch (e) {
+    console.error('/api/memory/query', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// Chat (RAG + chat + auto-save)
+app.post('/api/chat', requireServerKey, async (req, res) => {
+  try {
+    const { messages = [], topK = 5, auto_save = true, model } = req.body;
+    if (!Array.isArray(messages) || messages.length === 0) return res.status(400).json({ error: 'messages required' });
+
+    const userMessage = messages.slice().reverse().find(m => m.role === 'user')?.content || messages[messages.length - 1].content;
+
+    let retrievedText = '';
+    try {
+      const matches = await queryMemory(userMessage, topK);
+      if (matches && matches.length) {
+        retrievedText = matches.map(m => `Context (score:${(m.score||0).toFixed(3)}): ${m.text}`).join('\n---\n');
+      }
+    } catch (e) {
+      console.warn('RAG retrieval failed:', e.message);
+    }
+
+    const systemMessages = [{ role: 'system', content: 'أنت مساعد تقني. استخدم أي سياق مرفق لتحسين الإجابة.' }];
+    if (retrievedText) systemMessages.push({ role: 'system', content: 'سياقات مسترجعة:\n' + retrievedText });
+
+    const finalMessages = [...systemMessages, ...messages];
+    const chatModel = model || CHAT_MODEL;
+    const assistantText = await chatOpenAI(finalMessages, chatModel);
+
+    if (auto_save) {
+      try {
+        const combined = `USER: ${userMessage}\nASSISTANT: ${assistantText}`;
+        await addMemoryItem(combined, { source: 'auto' });
+      } catch (e) {
+        console.warn('Auto-save failed:', e.message);
+      }
+    }
+
+    return res.json({ response: assistantText });
+  } catch (e) {
+    console.error('/api/chat', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// Admin: trigger training manually (protected)
+app.post('/api/admin/trigger-train', requireServerKey, async (req, res) => {
+  try {
+    await buildTrainingDataAndMaybeFineTune();
+    return res.json({ ok: true, msg: 'Training task executed (file generated or auto-fine-tune attempted based on flags).' });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/health', (req, res) => res.json({ ok: true }));
+
+app.listen(PORT, () => {
+  console.log(`DevAI continuous server running at http://localhost:${PORT}/`);
+  console.log('Memory file:', MEMORY_FILE, 'Training file:', TRAINING_FILE);
+  console.log(`TRAIN_INTERVAL_MS=${TRAIN_INTERVAL_MS} MIN_TRAIN_EXAMPLES=${MIN_TRAIN_EXAMPLES}`);
+});
+
+// ----------------- Embedded simple frontend -----------------
+const INDEX_HTML = `<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>DevAI Core OS — واجهة تفاعلية مع ذاكرة وموديلات</title>
-  <style>
-    :root{
-      --bg:#061022; --panel:#0b1626; --muted:#94a3b8; --accent:#00d4ff;
-      --card:#0f2130; --success:#10b981;
-      --radius:12px; --border:1px solid rgba(255,255,255,0.04);
-    }
-    *{box-sizing:border-box}
-    body{font-family:"Segoe UI",Tahoma,Arial; background:var(--bg); color:#e6eef8; margin:0; padding:20px;}
-    header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
-    h1{margin:0;font-size:1.25rem}
-    .sub{color:var(--muted);font-size:0.9rem}
-    .container{display:flex;gap:20px;align-items:flex-start}
-    aside{width:320px;background:var(--panel);padding:14px;border-radius:var(--radius);border:var(--border)}
-    main{flex:1;min-width:300px}
-    label{display:block;color:var(--muted);font-size:0.85rem;margin-top:10px}
-    input[type=text], select, textarea{width:100%;padding:10px;border-radius:8px;border:none;background:var(--card);color:inherit}
-    .small{font-size:0.85rem;color:var(--muted)}
-    .row{display:flex;gap:8px;margin-top:10px}
-    button{background:linear-gradient(90deg,var(--accent),#00a8ff);color:#021022;border:none;padding:10px 12px;border-radius:8px;cursor:pointer;font-weight:700}
-    .btn-ghost{background:transparent;border:var(--border);color:var(--muted)}
-    .panel{background:var(--panel);padding:14px;border-radius:12px;border:var(--border);margin-bottom:12px}
-    .clock{font-weight:700;color:var(--accent)}
-    .memory-item{padding:8px;border-radius:8px;background:rgba(255,255,255,0.02);margin-top:8px;font-size:0.9rem}
-    .responses{margin-top:12px}
-    pre{background:#04101a;padding:12px;border-radius:8px;overflow:auto;white-space:pre-wrap;color:#cceeff}
-    .toggle{display:inline-flex;align-items:center;gap:8px}
-    .status{display:inline-block;padding:6px 8px;border-radius:8px;background:rgba(0,0,0,0.2);font-size:0.85rem}
-    footer{margin-top:18px;color:var(--muted);font-size:0.85rem}
-  </style>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DevAI Continuous — محلي</title>
+<style>
+  body{font-family:Arial,Helvetica,sans-serif;background:#071128;color:#e8f6ff;margin:16px}
+  .panel{background:#0b1b2b;padding:14px;border-radius:10px;margin-bottom:12px}
+  input,textarea,select{width:100%;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.05);background:#081426;color:inherit}
+  button{padding:8px 12px;border-radius:8px;border:none;background:#00bfff;color:#021022;font-weight:700;cursor:pointer}
+  pre{background:#06121a;padding:10px;border-radius:8px;white-space:pre-wrap;color:#cfefff}
+  .row{display:flex;gap:8px}
+  .muted{color:#9fb6c9;font-size:0.9rem}
+</style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>DevAI Core OS — بيئة تفاعلية</h1>
-      <div class="sub">بواسطة loutairi — واجهة اختبارية لربط نماذج الذكاء الاصطناعي والذاكرة التراكمية</div>
+  <div class="panel">
+    <h2>DevAI — نظام تعلّم مستمر محلي</h2>
+    <div class="muted">أدخل SERVER API KEY (x-api-key) الموجود في ملف .env ثم جرّب. لا تشغّل هذا على شبكة عامة دون الحماية.</div>
+
+    <label>SERVER API KEY (x-api-key)</label>
+    <input id="serverKey" placeholder="ضع SERVER_API_KEY هنا">
+
+    <label>نص / سؤال</label>
+    <textarea id="prompt" rows="5" placeholder="اطرح سؤالك هنا..."></textarea>
+
+    <div class="row" style="margin-top:8px">
+      <button id="send">أرسل (RAG → Chat)</button>
+      <button id="save">احفظ للذاكرة</button>
+      <button id="queryMem">استرجع ذاكرة (topK=5)</button>
+      <button id="triggerTrain">تشغيل تدريب يدوي</button>
     </div>
-    <div style="text-align:right">
-      <div class="clock" id="clock">--:--:--</div>
-      <div class="small">الوقت المحلي</div>
-    </div>
-  </header>
-
-  <div class="container">
-    <aside>
-      <div class="panel">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <strong>إعدادات الموديل والمفاتيح</strong>
-          <span class="status" id="connStatus">غير متصل</span>
-        </div>
-
-        <label>مزود النموذج</label>
-        <select id="provider">
-          <option value="openai">OpenAI (Chat & Embeddings)</option>
-          <option value="huggingface">HuggingFace Inference</option>
-          <option value="custom">مخصص (URL)</option>
-        </select>
-
-        <label>API Key (ادخل المفتاح هنا — يُخزن مؤقتاً في الجلسة)</label>
-        <input id="apiKey" type="text" placeholder="ضع مفتاح API هنا (لا تشاركه علناً)">
-
-        <label>نموذج الرد (model for chat / completion)</label>
-        <input id="chatModel" type="text" placeholder="مثلاً: gpt-4o-mini أو gpt-4o">
-
-        <label>نموذج الـ Embeddings (للبحث والذاكرة)</label>
-        <input id="embedModel" type="text" placeholder="مثلاً: text-embedding-3-small أو all-MiniLM-L6-v2">
-
-        <div class="row" style="margin-top:12px">
-          <button id="testConn">اختبر الاتصال</button>
-          <button class="btn-ghost" id="clearMemory">مسح الذاكرة</button>
-        </div>
-
-        <label style="margin-top:12px">خيارات الذاكرة</label>
-        <div class="row">
-          <div>
-            <div class="small">حفظ تلقائي</div>
-            <select id="saveMode">
-              <option value="auto">حفظ كل التفاعلات</option>
-              <option value="manual">حفظ يدوي</option>
-            </select>
-          </div>
-          <div>
-            <div class="small">حجم الذاكرة للبحث</div>
-            <input id="topK" type="text" value="5" style="width:70px">
-          </div>
-        </div>
-
-        <div style="margin-top:12px;font-size:0.85rem;color:var(--muted)">
-          ملاحظة أمنيّة: يفضّل استخدام واجهة خادم وسيط (server-side) لتخزين المفاتيح بدلاً من المتصفح. المتصفح مفيد للتجارب فقط.
-        </div>
-      </div>
-
-      <div class="panel">
-        <strong>الذاكرة المحلية (Local RAG store)</strong>
-        <div id="memoryList" style="max-height:260px;overflow:auto;margin-top:8px">
-          <!-- memory entries appear here -->
-        </div>
-
-        <div style="margin-top:10px;display:flex;gap:8px">
-          <button id="exportMemory" class="btn-ghost">تصدير الذاكرة</button>
-          <button id="importMemory" class="btn-ghost">استيراد</button>
-        </div>
-      </div>
-    </aside>
-
-    <main>
-      <div class="panel">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <strong>مربع الأوامر</strong>
-          <div class="small">الذاكرة التضمينية تستخدم لاسترجاع السياق قبل الطلب</div>
-        </div>
-
-        <label>ادخل سؤالك أو الطلب</label>
-        <textarea id="prompt" rows="6" placeholder="اكتب أي شيء: اطلب كود، ملخص، أو سؤال تقني..."></textarea>
-
-        <div class="row" style="margin-top:10px">
-          <button id="send">أرسل</button>
-          <button id="saveManual" class="btn-ghost">احفظ للذاكرة</button>
-          <button id="clearChat" class="btn-ghost">مسح العرض</button>
-        </div>
-
-        <div id="responseArea" class="responses"></div>
-      </div>
-
-      <div class="panel">
-        <strong>سجل النشاط (Activity)</strong>
-        <pre id="log" style="min-height:100px">لا توجد نشاطات بعد.</pre>
-      </div>
-    </main>
   </div>
 
-  <footer>
-    تجربة محلية: الذاكرة هنا تخدم كـ "RAG / contextual memory" — ليست تدريباً فعلياً للنموذج. لتدريب حقيقي (continuous learning) يجب بناء باك-إند يقوم بتخزين البيانات، تنظيفها، وتدريب/ضبط النموذج أو إنشاء fine-tunes أو pipelines لإعادة التدريب الدوري.
-  </footer>
+  <div class="panel">
+    <h3>الاستجابة</h3>
+    <div id="out"></div>
+  </div>
 
-  <script>
-    // ---------- محلي: ساعة وتحديث الواجهة ----------
-    function updateClock(){
-      const el = document.getElementById('clock');
-      const now = new Date();
-      el.textContent = now.toLocaleTimeString();
-      requestAnimationFrame(()=>{ setTimeout(updateClock, 1000); });
-    }
-    updateClock();
+  <div class="panel">
+    <h3>سجل</h3>
+    <pre id="log">لا شيء بعد.</pre>
+  </div>
 
-    // ---------- حالة الاتصال والوظائف المساعدة ----------
-    const cfg = {
-      providerEl: document.getElementById('provider'),
-      apiKeyEl: document.getElementById('apiKey'),
-      chatModelEl: document.getElementById('chatModel'),
-      embedModelEl: document.getElementById('embedModel'),
-      testConnBtn: document.getElementById('testConn'),
-      connStatusEl: document.getElementById('connStatus'),
-      memoryListEl: document.getElementById('memoryList'),
-      topKEl: document.getElementById('topK'),
-      saveModeEl: document.getElementById('saveMode'),
-    };
-
-    // البنية التخزينية للذاكرة (localStorage)
-    const STORAGE_KEY = 'devai_memory_v1';
-    function loadMemory(){ try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch(e){ return []; } }
-    function saveMemory(mem){ localStorage.setItem(STORAGE_KEY, JSON.stringify(mem)); renderMemoryList(); }
-    function renderMemoryList(){
-      const mem = loadMemory();
-      cfg.memoryListEl.innerHTML = '';
-      if(mem.length===0){ cfg.memoryListEl.innerHTML = '<div class="small" style="color:var(--muted)">لا توجد ذاكرة محفوظة بعد.</div>'; return; }
-      mem.slice().reverse().forEach(item=>{
-        const d = document.createElement('div'); d.className='memory-item';
-        d.innerHTML = `<div style="font-size:0.85rem;color:var(--muted)">${new Date(item.t||0).toLocaleString()}</div>
-                       <div style="margin-top:6px">${escapeHtml(item.text)}</div>`;
-        cfg.memoryListEl.appendChild(d);
-      });
-    }
-    renderMemoryList();
-
-    function escapeHtml(s){ return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-
-    // ---------- أدوات التضمين والمقاييس ----------
-    function dot(a,b){ let s=0; for(let i=0;i<a.length;i++) s+=a[i]*b[i]; return s; }
-    function norm(a){ return Math.sqrt(dot(a,a))||1; }
-    function cosineSim(a,b){ return dot(a,b)/(norm(a)*norm(b)); }
-
-    // ---------- واجهة موحدة لنداءات الموديل (Chat + Embeddings) ----------
-    async function getEmbedding(text){
-      const provider = cfg.providerEl.value;
-      const key = cfg.apiKeyEl.value.trim();
-      const model = cfg.embedModelEl.value.trim() || undefined;
-      if(!key) throw new Error('API key required');
-
-      if(provider==='openai'){
-        const url = 'https://api.openai.com/v1/embeddings';
-        const body = {model: model || 'text-embedding-3-small', input: text};
-        const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+key}, body: JSON.stringify(body)});
-        const data = await res.json();
-        if(data && data.data && data.data[0] && data.data[0].embedding) return data.data[0].embedding;
-        throw new Error('OpenAI embedding error: ' + JSON.stringify(data));
-      } else if(provider==='huggingface'){
-        // HuggingFace embeddings API: POST https://api-inference.huggingface.co/embeddings/{model}
-        const modelPath = model || 'all-MiniLM-L6-v2';
-        const url = `https://api-inference.huggingface.co/embeddings/${modelPath}`;
-        const res = await fetch(url, {method:'POST', headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'}, body: JSON.stringify({inputs:text})});
-        const data = await res.json();
-        if(Array.isArray(data) && Array.isArray(data[0])) return data[0];
-        if(data && data.embedding) return data.embedding;
-        throw new Error('HF embedding error: ' + JSON.stringify(data));
-      } else if(provider==='custom'){
-        // مستخدم يحدد endpoint في chatModelEl كمثال: https://api.example.com/embeddings
-        const url = cfg.chatModelEl.value.trim();
-        const res = await fetch(url, {method:'POST', headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'}, body: JSON.stringify({input:text})});
-        const data = await res.json();
-        return data.embedding || data.data?.[0]?.embedding;
-      }
-      throw new Error('Unsupported provider');
-    }
-
-    async function callChat(messages){
-      const provider = cfg.providerEl.value;
-      const key = cfg.apiKeyEl.value.trim();
-      const model = cfg.chatModelEl.value.trim() || undefined;
-      if(!key) throw new Error('API key required');
-
-      if(provider==='openai'){
-        const url = 'https://api.openai.com/v1/chat/completions';
-        const body = {model: model || 'gpt-4o-mini', messages: messages, temperature:0.2};
-        const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+key}, body: JSON.stringify(body)});
-        const data = await res.json();
-        if(data.choices && data.choices[0] && data.choices[0].message) return data.choices[0].message.content;
-        throw new Error('OpenAI chat error: ' + JSON.stringify(data));
-      } else if(provider==='huggingface'){
-        // For HF we try the text-generation endpoint (may differ by model)
-        const modelPath = model || 'gpt2';
-        const url = `https://api-inference.huggingface.co/models/${modelPath}`;
-        const res = await fetch(url, {method:'POST', headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'}, body: JSON.stringify({inputs: messages.map(m=>m.content).join('\n'), parameters:{max_new_tokens:400}})});
-        const data = await res.json();
-        if(Array.isArray(data) && data[0].generated_text) return data[0].generated_text;
-        if(data.generated_text) return data.generated_text;
-        throw new Error('HF chat error: ' + JSON.stringify(data));
-      } else if(provider==='custom'){
-        const url = cfg.chatModelEl.value.trim();
-        const res = await fetch(url, {method:'POST', headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'}, body: JSON.stringify({messages})});
-        const data = await res.json();
-        return data.output || data.text || JSON.stringify(data);
-      }
-      throw new Error('Unsupported provider');
-    }
-
-    // ---------- تخزين/استرجاع الذاكرة (RAG-like) ----------
-    async function addToMemory(text){
-      try{
-        const emb = await getEmbedding(text);
-        const mem = loadMemory();
-        mem.push({id:Date.now().toString(), text, embedding: emb, t: Date.now()});
-        saveMemory(mem);
-        log('حُفِظتُ تذكرة للذاكرة');
-      } catch(e){
-        log('خطأ بحفظ الذاكرة: ' + e.message);
-      }
-    }
-
-    function retrieveRelevant(query, k=5){
-      try{
-        const mem = loadMemory();
-        if(!mem.length) return [];
-        // لو كانت الذاكرة كبيرة فقد تود تقليلها أو إرسال البحث لخادم
-        return getEmbedding(query).then(qe=>{
-          const scored = mem.map(m=>({m,score:cosineSim(qe, m.embedding||[])}));
-          scored.sort((a,b)=>b.score-a.score);
-          return scored.slice(0,k).map(x=>x.m);
-        }).catch(err=>{
-          log('خطأ في استخراج تضمين للبحث: '+err.message);
-          return [];
-        });
-      } catch(e){
-        return [];
-      }
-    }
-
-    // ---------- واجهة المستخدم: إرسال، حفظ، عرض ----------
-    const logEl = document.getElementById('log');
-    function log(msg){ const now = new Date().toLocaleTimeString(); logEl.textContent = now + ' — ' + msg + '\n' + logEl.textContent; }
-
-    document.getElementById('send').addEventListener('click', async ()=>{
-      const prompt = document.getElementById('prompt').value.trim();
-      if(!prompt){ alert('أدخل نصاً ثم أعد المحاولة'); return; }
-
-      setConnStatus('جاري المعالجة...', false);
-      try{
-        // 1) استرجاع السياق الأكثر صلة من الذاكرة
-        const k = parseInt(cfg.topKEl.value || '5', 10);
-        const relevant = await retrieveRelevant(prompt, k);
-        let contextText = '';
-        if(relevant && relevant.length){
-          contextText = relevant.map(r=>`(السياق ${new Date(r.t).toLocaleString()}): ${r.text}`).join('\n---\n');
-          log(`أُرفِق ${relevant.length} مذكّرة من الذاكرة كـ context`);
-        }
-
-        // 2) بناء الرسائل (system + user + retrieved)
-        const messages = [];
-        messages.push({role:'system', content: 'أنت مساعد ذكي يساعد المطور. استخدم السياق المرفق إن لزم.'});
-        if(contextText) messages.push({role:'system', content: 'سياقات محفوظة:\n' + contextText});
-        messages.push({role:'user', content: prompt});
-
-        // 3) استدعاء الموديل
-        const response = await callChat(messages);
-        // عرض النتيجة
-        const area = document.getElementById('responseArea');
-        const out = document.createElement('div');
-        out.innerHTML = `<div style="font-size:0.85rem;color:var(--muted);margin-bottom:6px">${new Date().toLocaleString()}</div>
-                         <pre>${escapeHtml(response)}</pre>`;
-        area.prepend(out);
-        log('تم استلام استجابة من الموديل');
-
-        // 4) حفظ تلقائي للذاكرة إن كان الوضع auto
-        const saveMode = cfg.saveModeEl.value;
-        if(saveMode==='auto'){
-          await addToMemory('USER: ' + prompt + '\nBOT: ' + response);
-        }
-
-      } catch(e){
-        log('خطأ التنفيذ: ' + e.message);
-        alert('خطأ: ' + e.message);
-      } finally{
-        setConnStatus('جاهز', true);
-      }
+<script>
+  function log(msg){ const p=document.getElementById('log'); p.textContent = new Date().toLocaleTimeString() + ' — ' + msg + '\\n' + p.textContent; }
+  async function api(path, body){
+    const key = document.getElementById('serverKey').value.trim();
+    if(!key) return alert('ضع SERVER_API_KEY في الحقل العلوي');
+    const res = await fetch('/api/' + path, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','x-api-key': key},
+      body: JSON.stringify(body)
     });
+    return res.json();
+  }
 
-    // حفظ يدوي
-    document.getElementById('saveManual').addEventListener('click', async ()=>{
-      const prompt = document.getElementById('prompt').value.trim();
-      if(!prompt) return alert('لا يوجد نص للحفظ');
-      await addToMemory(prompt);
-      alert('حُفظ نصك في الذاكرة المحلية');
-    });
+  document.getElementById('send').onclick = async ()=>{
+    const prompt = document.getElementById('prompt').value.trim();
+    if(!prompt) return alert('اكتب نصاً');
+    log('إرسال طلب للدردشة...');
+    const messages = [{role:'user', content: prompt}];
+    const r = await api('chat', { messages, topK:5, auto_save:true });
+    if(r.error) { log('خطأ: ' + r.error); alert('خطأ: ' + r.error); return; }
+    document.getElementById('out').innerHTML = '<pre>' + (r.response || JSON.stringify(r)) + '</pre>';
+    log('استلمت استجابة');
+  };
 
-    // مسح الذاكرة
-    document.getElementById('clearMemory').addEventListener('click', ()=>{
-      if(confirm('هل تريد مسح كل الذاكرة المحلية؟')){ localStorage.removeItem(STORAGE_KEY); renderMemoryList(); log('ُمَسحت الذاكرة'); }
-    });
+  document.getElementById('save').onclick = async ()=>{
+    const prompt = document.getElementById('prompt').value.trim();
+    if(!prompt) return alert('اكتب نصاً للحفظ');
+    const r = await api('memory/add', { text: prompt });
+    if(r.error) { alert('خطأ: ' + r.error); return; }
+    alert('تم الحفظ: ' + (r.id||''));
+    log('حفظت ذاكرة ' + (r.id||''));
+  };
 
-    // اختبار الاتصال سريع
-    cfg.testConnBtn.addEventListener('click', async ()=>{
-      setConnStatus('جاري الاختبار...', false);
-      try{
-        // سنحاول استدعاء end-to-end: نطلب embedding صغيراً على النص "ping"
-        await getEmbedding('ping');
-        setConnStatus('مستجيب', true);
-        log('الاختبار ناجح: مزود الاستجابة يعمل');
-      } catch(e){
-        setConnStatus('خطأ: ' + e.message, false);
-        log('فشل اختبار الاتصال: ' + e.message);
-        alert('فشل اختبار الاتصال: ' + e.message);
-      }
-    });
+  document.getElementById('queryMem').onclick = async ()=>{
+    const prompt = document.getElementById('prompt').value.trim();
+    if(!prompt) return alert('اكتب نصاً للاستعلام');
+    const r = await api('memory/query', { query: prompt, topK: 5 });
+    if(r.error) { alert('خطأ: ' + r.error); return; }
+    document.getElementById('out').innerHTML = '<pre>' + JSON.stringify(r.matches, null, 2) + '</pre>';
+    log('استرجعت ' + (r.matches?.length || 0) + ' نتيجة');
+  };
 
-    // مسح العرض
-    document.getElementById('clearChat').addEventListener('click', ()=>{
-      document.getElementById('responseArea').innerHTML='';
-      log('تم مسح العرض');
-    });
-
-    // تصدير / استيراد الذاكرة
-    document.getElementById('exportMemory').addEventListener('click', ()=>{
-      const data = localStorage.getItem(STORAGE_KEY) || '[]';
-      const blob = new Blob([data], {type:'application/json'});
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'devai_memory.json';
-      document.body.appendChild(a); a.click(); a.remove();
-    });
-    document.getElementById('importMemory').addEventListener('click', ()=>{
-      const txt = prompt('ألصق JSON الذاكرة هنا:');
-      try{
-        const parsed = JSON.parse(txt || '[]');
-        saveMemory(parsed);
-        alert('تم الاستيراد');
-      } catch(e){ alert('JSON غير صالح: ' + e.message); }
-    });
-
-    // مساعد: ضبط حالة الاتصال
-    function setConnStatus(msg, ok){
-      cfg.connStatusEl.textContent = msg;
-      cfg.connStatusEl.style.background = ok ? 'rgba(16,185,129,0.12)' : 'transparent';
-      cfg.connStatusEl.style.color = ok ? 'var(--success)' : '#ffd166';
-    }
-
-    // تهيئة: إذا وُجدت مفاتيح أو إعدادات في الجلسة، أعرضها
-    (function initFromSession(){
-      const s = sessionStorage;
-      if(s.getItem('devai_apiKey')) cfg.apiKeyEl.value = s.getItem('devai_apiKey');
-      if(s.getItem('devai_provider')) cfg.providerEl.value = s.getItem('devai_provider');
-      if(s.getItem('devai_chatModel')) cfg.chatModelEl.value = s.getItem('devai_chatModel');
-      if(s.getItem('devai_embedModel')) cfg.embedModelEl.value = s.getItem('devai_embedModel');
-      // حفظ تلقائي للمفاتيح عند تغيّرها (جلسة المتصفح فقط)
-      cfg.apiKeyEl.addEventListener('change', ()=> sessionStorage.setItem('devai_apiKey', cfg.apiKeyEl.value));
-      cfg.providerEl.addEventListener('change', ()=> sessionStorage.setItem('devai_provider', cfg.providerEl.value));
-      cfg.chatModelEl.addEventListener('change', ()=> sessionStorage.setItem('devai_chatModel', cfg.chatModelEl.value));
-      cfg.embedModelEl.addEventListener('change', ()=> sessionStorage.setItem('devai_embedModel', cfg.embedModelEl.value));
-    })();
-
-    // تجربة: إجراء عملية "تعلّم مستمر" بشكل مبسط عبر setInterval
-    // تحذير: هذا مجرد محاكاة محليّة (سيقوم فقط بحفظ المحادثات الحالية كذاكرة دورية)
-    let backgroundLearner = null;
-    function startBackgroundLearner(){
-      if(backgroundLearner) return;
-      backgroundLearner = setInterval(async ()=>{
-        try{
-          const saveMode = cfg.saveModeEl.value;
-          if(saveMode!=='auto') return;
-          // خذ آخر 3 ردود من الواجهة واحفظها كمذكرة
-          const responses = Array.from(document.querySelectorAll('#responseArea pre')).slice(0,3).map(p=>p.textContent).join('\n---\n');
-          if(responses) await addToMemory('BACKGROUND SNAPSHOT:\n' + responses);
-          log('تعلم دوري: حفظ لقطة خلفية من التفاعلات');
-        } catch(e){ log('خطأ التعلم الدوري: ' + e.message); }
-      }, 1000 * 60 * 5); // كل 5 دقائق؛ عدِّل حسب الحاجة
-    }
-    function stopBackgroundLearner(){ if(backgroundLearner){ clearInterval(backgroundLearner); backgroundLearner = null; } }
-
-    // ابدأ التعلم الدوري افتراضياً إن كان الحفظ تلقائي
-    if(cfg.saveModeEl.value === 'auto') startBackgroundLearner();
-    cfg.saveModeEl.addEventListener('change', ()=> {
-      if(cfg.saveModeEl.value === 'auto') startBackgroundLearner(); else stopBackgroundLearner();
-    });
-
-    // أخيراً: لوِّن حالة الاتصال كبداية
-    setConnStatus('جاهز', true);
-  </script>
+  document.getElementById('triggerTrain').onclick = async ()=>{
+    const r = await api('admin/trigger-train', {});
+    if(r.error) { alert('خطأ: ' + r.error); return; }
+    alert(r.msg || 'تم تشغيل مهمة التدريب يدوياً.');
+    log('تشغيل تدريب يدوي');
+  };
+</script>
 </body>
-</html>
+</html>`;
