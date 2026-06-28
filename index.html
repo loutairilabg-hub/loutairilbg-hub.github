@@ -137,15 +137,16 @@ function authenticate(req, res, next) {
   return res.status(401).json({ error: 'غير مصرح به. مفتاح API خاطئ أو مفقود.' });
 }
 
-// واجهة مستخدم مطورة وعصرية (Dashboard)
+// الواجهة الرسومية المصححة والمحمية من التداخل النصي
 app.get('/', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`
     <!DOCTYPE html>
     <html lang="ar" dir="rtl">
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>نظام التعلم المستمر الذكي</title>
+      <title>نظام الذاكرة المستمرة الذكي</title>
       <link href="https://googleapis.com" rel="stylesheet">
       <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Cairo', sans-serif; }
@@ -167,50 +168,50 @@ app.get('/', (req, res) => {
         button:hover { background: #7dd3fc; }
         button.secondary { background: #475569; color: #fff; margin-top: 0.5rem; }
         button.secondary:hover { background: #64748b; }
-        .chat-area { height: 400px; display: flex; flex-direction: column; }
+        .chat-area { height: 500px; display: flex; flex-direction: column; }
         .chat-messages { flex: 1; overflow-y: auto; background: #0f172a; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.75rem; border: 1px solid #334155; }
         .msg { max-width: 80%; padding: 0.75rem 1rem; border-radius: 12px; line-height: 1.5; font-size: 0.95rem; }
-        .msg.user { background: #38bdf8; color: #0f172a; align-self: flex-start; border-bottom-right-radius: 0; }
-        .msg.bot { background: #334155; color: #f8fafc; align-self: flex-end; border-bottom-left-radius: 0; }
-        .msg.system-info { background: rgba(56, 189, 248, 0.1); color: #38bdf8; font-size: 0.8rem; border-radius: 6px; align-self: center; text-align: center; max-width: 100%; width: 100%; }
+        .msg.user { background: #38bdf8; color: #0f172a; align-self: flex-start; border-radius: 12px 12px 0 12px; }
+        .msg.bot { background: #334155; color: #f8fafc; align-self: flex-end; border-radius: 12px 12px 12px 0; }
         .chat-input-box { display: flex; gap: 0.5rem; }
         .chat-input-box input { margin-bottom: 0; flex: 1; }
         .chat-input-box button { width: auto; padding: 0 1.5rem; }
-        .notification { fixed: top; background: #10b981; color: white; padding: 0.7rem 1.5rem; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); border-radius: 8px; font-size: 0.9rem; display: none; z-index: 100; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); }
+        .notification { background: #10b981; color: white; padding: 0.7rem 1.5rem; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); border-radius: 8px; font-size: 0.9rem; display: none; z-index: 100; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); }
       </style>
     </head>
     <body>
       <div class="notification" id="toast"></div>
       <div class="container">
         <header>
-          <h1>🧠 الذاكرة المستمرة</h1>
+          <h1>🧠 مستودع التعلم والذاكرة الرقمية</h1>
           <div class="api-input-group">
             <span>🔑 مفتاح الـ API:</span>
-            <input type="password" id="apiKeyInput" placeholder="أدخل SERVER_API_KEY..." value="">
+            <input type="password" id="apiKeyInput" placeholder="أدخل SERVER_API_KEY...">
           </div>
         </header>
 
         <div class="grid">
-          <!-- القسم الجانبي المخصص لإدارة الذاكرة -->
-          <div class="flex-col" style="display:flex; flex-direction:column; gap:1.5rem;">
+          <div style="display:flex; flex-direction:column; gap:1.5rem;">
             <div class="card">
-              <h2>📊 حالة المستودع المحلي</h2>
+              <h2>📊 حالة الذاكرة المتجهية</h2>
               <div class="stat-box">
-                <span>إجمالي العناصر المخزنة:</span>
+                <span>إجمالي الأفكار المحفوظة:</span>
                 <span class="stat-val" id="memCount">-</span>
               </div>
-              <p style="font-size:0.85rem; color:#94a3b8; line-height:1.4;">يقوم النظام بتخزين المعلومات كـ Vectors محلياً وتحديث ملف التدريب بشكل تلقائي دوري.</p>
-              <button class="secondary" onclick="triggerTrain()">⚡ مزامنة وتحديث التدريب يدوياً</button>
+              <p style="font-size:0.85rem; color:#94a3b8; line-height:1.4;">النظام يحفظ المعلومات دلالياً في قاعدة بيانات متجهية محلية (RAG).</p>
+              <button class="secondary" onclick="triggerTrain()">⚡ تحديث ملفات التدريب يدوياً</button>
             </div>
 
             <div class="card">
-              <h2>📥 غرس معلومة جديدة في الذاكرة</h2>
-              <textarea id="memoryText" rows="4" placeholder="اكتب حقيقة، حدثاً، أو معلومة تريد أن يتذكرها المساعد بشكل دائم..."></textarea>
-              <button onclick="addMemory()">حفظ في الذاكرة الرقمية</button>
+              <h2>📥 حقن حقيقة أو معلومة جديدة</h2>
+              <textarea id="memoryText" rows="4" placeholder="اكتب معلومة جديدة هنا ليتم استدعاؤها تلقائياً أثناء الدردشة..."></textarea>
+              <button onclick="addMemory()">حفظ وتشفير بالـ Vector</button>
             </div>
           </div>
 
-          <!-- قسم المحادثة الرئيسي المستند للذاكرة -->
           <div class="card chat-area">
-            <h2>💬 محادثة ذكية مستندة للسياق الذاكري</h2>
+            <h2>💬 غرفة دردشة مستندة للذاكرة المستمرة</h2>
             <div class="chat-messages" id="chatMessages">
+              <div class="msg bot">مرحباً بك! اكتب أي سؤال وسأقوم باستخراج الحقائق المخزنة بذاكرتي فوراً للرد عليك بدقة.</div>
+            </div>
+            <div class="chat-input-box">
